@@ -1,0 +1,436 @@
+---
+title: "Homework 2"
+author: "Ashley Miller"
+date: "2024-10-08"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(dirmult)
+library(reshape2)
+library(HDInterval)
+library(rstan)
+```
+
+## Problem 1
+```{r, echo=FALSE}
+data = read.csv("whitewine-training-ds6040.csv")
+```
+
+### Choose 2 continuous predictors and plot density plots (using ggplot2 ). For each predictor, consider the density plot. What do you notice? Do they look like they are normally distributed? Skewed?
+
+```{r plot, echo=FALSE}
+data %>%
+  ggplot(aes(x = volatile.acidity)) + 
+  geom_density(fill = 'red', alpha = 0.5)
+
+data %>%
+  ggplot(aes(x = citric.acid)) + 
+  geom_density(fill = 'purple', alpha = 0.5)
+```
+
+### 1. Using a normal likelihood with known variance (the known variance for each variable is the observed variance, go ahead and calculate that), use the appropriate conjugate prior and calculate out the posterior distribution (you should be able to look up the formula for the posteriors, no need to derive them out yourself). When you calculate these posterior distributions, use two sets of hyperparameters (per variable), one where the hyperparameters specify a fairly uninformative prior, and the other where the hyperparameters are much more informative (this doesn't need to be a reasonable value either, this exercise is to demonstrate the impact of hyperparameter choice). At the end of this exercise, you should have the parameters for 4 posterior distributions.
+```{r acidpost, echo=FALSE}
+mu_n = function(mu_0, sig2_0, x_bar, sig2, n){
+  return ((sig2*mu_0/(n*sig2_0 + sig2)) + (n*sig2_0*x_bar/(n*sig2_0 + sig2)))
+}
+
+sig2_n = function(sig2_0, sig2, n){
+  return (1/((n/sig2)+(1/sig2_0)))
+}
+
+vol_acid_sig2 = var(data$volatile.acidity)
+
+prior1 = list(mu_0 = 50, sig2_0 = 100000) # uniformed prior
+prior2 = list(mu_0 = -1, sig2_0 = 2.25) # lightly informative prior
+
+acid_post1 = list(mu_n = mu_n(prior1$mu_0, prior1$sig2_0, mean(data$volatile.acidity), vol_acid_sig2, nrow(data)), sig2_n = sig2_n(prior1$sig2_0, vol_acid_sig2, nrow(data)))
+
+acid_post2 = list(mu_n = mu_n(prior2$mu_0, prior2$sig2_0, mean(data$volatile.acidity), vol_acid_sig2, nrow(data)), sig2_n = sig2_n(prior2$sig2_0, vol_acid_sig2, nrow(data)))
+
+cat("Volatile Acidity Posterior (Prior 1):\n")
+cat("Mean (mu_n):", acid_post1$mu_n, "\n")
+cat("Variance (sig2_n):", acid_post1$sig2_n, "\n\n")
+
+cat("Volatile Acidity Posterior (Prior 2):\n")
+cat("Mean (mu_n):", acid_post2$mu_n, "\n")
+cat("Variance (sig2_n):", acid_post2$sig2_n, "\n")
+```
+```{r citpost, echo=FALSE}
+citrate_sig2 = var(data$citric.acid)
+prior1 = list(mu_0 = 0, sig2_0 = 1000) # uninformed prior
+prior2 = list(mu_0 = -5000, sig2_0 = 1) # lightly informative prior
+
+cit_post1 = list(mu_n = mu_n(prior1$mu_0, prior1$sig2_0, mean(data$citric.acid), citrate_sig2, nrow(data)), sig2_n = sig2_n(prior1$sig2_0, citrate_sig2, nrow(data)))
+
+cit_post2 = list(mu_n = mu_n(prior2$mu_0, prior2$sig2_0, mean(data$citric.acid), citrate_sig2, nrow(data)), sig2_n = sig2_n(prior2$sig2_0, citrate_sig2, nrow(data)))
+
+cat("Citric Acid Posterior (Prior 1):\n")
+cat("Mean (mu_n):", cit_post1$mu_n, "\n")
+cat("Variance (sig2_n):", cit_post1$sig2_n, "\n\n")
+
+cat("Citric Acid Posterior (Prior 2):\n")
+cat("Mean (mu_n):", cit_post2$mu_n, "\n")
+cat("Variance (sig2_n):", cit_post2$sig2_n, "\n")
+```
+### 2. What are the impacts of different hyperparameter choices on the posterior distributions? Is it possible to choose "bad" hyperparameters? If so, why? What are the consequences for inference?
+
+#### The lower the variance of the prior, the more the choice of mean matters. One can choose an extremely unreasonable mean and the posterior distribution will be dragged in that direction. It is notable that one has to choose a mean that is orders of magnitude away from the observed mean to get the "wrong" inference.
+
+
+### 1. Repeat the previous work, but this time use an exponential likelihood and corresponding conjugate prior (again, you can look this up and get the formula that way).
+```{r acidpost2, echo=FALSE}
+mu_n = function(alpha, beta, S, n){
+  return ((alpha+n)/(beta+S))
+}
+
+sig2_n = function(alpha, beta, S, n){
+  return ((alpha+n)/((beta+S)^2))
+}
+
+prior1 = list(alpha = 1, beta = 1) # uniformed prior
+prior2 = list(alpha = .001, beta = 1.1) # lightly informative prior
+
+acid_exp_post1 = list(mu_n = mu_n(prior1$alpha, prior1$beta, sum(data$volatile.acidity), nrow(data)), sig2_n = sig2_n(prior1$alpha, prior1$beta, sum(data$volatile.acidity), nrow(data)))
+
+acid_exp_post2 = list(mu_n = mu_n(prior2$alpha, prior2$beta, sum(data$volatile.acidity), nrow(data)), sig2_n = sig2_n(prior2$alpha, prior2$beta, sum(data$volatile.acidity), nrow(data)))
+
+cat("Volatile Acidity Posterior (Prior 1):\n")
+cat("Mean (mu_n):", acid_exp_post1$mu_n, "\n")
+cat("Variance (sig2_n):", acid_exp_post1$sig2_n, "\n\n")
+
+cat("Volatile Acidity Posterior (Prior 2):\n")
+cat("Mean (mu_n):", acid_exp_post2$mu_n, "\n")
+cat("Variance (sig2_n):", acid_exp_post2$sig2_n, "\n")
+```
+```{r citpost2, echo=FALSE}
+prior1 = list(alpha = 1, beta = 0.1) # uniformed prior
+prior2 = list(alpha = .01, beta = 66.66) # lightly informative prior
+
+cit_exp_post1 = list(mu_n = mu_n(prior1$alpha, prior1$beta, sum(data$citric.acid), nrow(data)), sig2_n = sig2_n(prior1$alpha, prior1$beta, sum(data$citric.acid), nrow(data)))
+
+cit_exp_post2 = list(mu_n = mu_n(prior2$alpha, prior2$beta, sum(data$citric.acid), nrow(data)), sig2_n = sig2_n(prior2$alpha, prior2$beta, sum(data$citric.acid), nrow(data)))
+
+cat("Citric Acid Posterior (Prior 1):\n")
+cat("Mean (mu_n):", cit_exp_post1$mu_n, "\n")
+cat("Variance (sig2_n):", cit_exp_post1$sig2_n, "\n\n")
+
+cat("Citric Acid Posterior (Prior 2):\n")
+cat("Mean (mu_n):", cit_exp_post2$mu_n, "\n")
+cat("Variance (sig2_n):", cit_exp_post2$sig2_n, "\n")
+```
+### 2. Again, what are the impacts of the hyperparameter choice?
+
+#### The choices of alpha don't affect the data unless the amount of data is small or alpha is large. The larger choices of beta reduce the variance and are only affected by the sum of the values of the data. In these cases, S is nearly zero, so beta is very influential.
+
+### 3. In the previous example, it was very simple for you to interpret the parameters in the posteriors. In this case, you will need to calculate the expected value and variance of the posterior distribution. You can look this up for the distribution (use Wikipedia!). How do these  values differ from the values you found when using a normal distribution as the likelihood?
+
+#### As seen above, I arrived at the closed form solution for the expected value and variance, and since both observed means are negative, the exponential likelihood is not a good choice for the posterior. The uninformative prior choices were orders of magnitude away from the observed mean. The variances for the exponential likelihoods were also very large, but with more targeted choices for beta, approached the observed mean and variance (approximately).
+
+## Part 2: Multinomial Priors for Wine Quality (33 points) The quality variable in this dataset is a categorical variable with values taking letter grades (A, C, F). We can consider this variable to be multinomially distributed. Multinomial distributions have a conjugate prior in the Dirichlet distribution. The Dirichlet distribution can be parameterized using either a single α parameter that applies to each category, or you can specify a different αk parameter for each category. In any case, the posterior distribution for a multinomial-Dirichlet model is Dirichlet(α + n) , where α is a vector of either all the same number, or the hyperparameter choice per category, and n is a vector of the counts of each category.
+
+### 1. Looking at the above formula for the posterior distribution, how can you interpret the meaning of α?
+
+#### The alpha values are the parameters that determine the weighting of the different categories of our variable.
+
+### 2. Choosing two sets of hyperparameters, one fairly uninformative and one highly informative, generate 1000 observations from the posterior distributions (using rdirichlet from the dirmult R package). At the end of this generative process, you should have two data.frames or matrices that have 1000 rows and 3 columns.
+
+```{r diri}
+alpha_1 = c(1,1,1) # uninformative
+alpha_2 = c(10000/3178, 207800/3178, 100000/3178) # informative (scaled)
+uninf_d = as.data.frame(rdirichlet(n=1000, alpha = alpha_1))
+inf_d = as.data.frame(rdirichlet(n=1000, alpha = alpha_2))
+colnames(uninf_d) = c("A", "C", "F")
+colnames(inf_d) = c("A", "C", "F")
+uninf_d$type <- "Uninformative"
+inf_d$type <- "Informative"
+```
+### 3. Plot these posterior distributions (you should end up with 2 figures of box plots, one figure per prior specification, each figure containing 3 boxplots, one for each letter grade).
+
+```{r boxplot, echo=FALSE}
+uninf_long_df <- melt(uninf_d,
+                      variable.name = "Grade", value.name = "Value")
+inf_long_df <- melt(inf_d,
+                    variable.name = "Grade", value.name = "Value")
+
+cool_colors <- c("#0EFF0A", "#FE019A", "#04D9FF")
+
+ggplot(uninf_long_df, aes(x = Grade, y = Value, fill = Grade)) +
+  geom_boxplot() +
+  scale_fill_manual(values = cool_colors) +
+  theme_minimal() +
+  labs(title = "Uninformative Prior",
+       x = "Grade",
+       y = "Expected Proportion") +
+  theme(panel.background = element_rect(fill = "#FFFFFF"))
+
+ggplot(inf_long_df, aes(x = Grade, y = Value, fill = Grade)) +
+  geom_boxplot() +
+  scale_fill_manual(values = cool_colors) +
+  theme_minimal() +
+  labs(title = "Informative Prior",
+       x = "Grade",
+       y = "Expected Proportion") +
+  theme(panel.background = element_rect(fill = "#FFFFFF"))
+
+```
+
+### 4. Comment on the impact of prior choice here.
+#### The prior allowed us to vary each of the categories individually. Uninformed kept the distributions across categories very similar. The means were all around 33% as one would expect for a three category variable. The informed prior choices that I used separated them more closely according to the observed proportion. I scaled them all to separate the populations even more.
+
+## Part 3: A Bayesian Test of Inference (34 points) 
+What we've been doing so far here is exploring the impact of priors using marginal distributions. While you could technically do some form of statistical inference with these, the inference isn't that interesting (is alcohol significantly different from 0? for example). In this part, we are going to be using conjugate priors to examine the difference in alcohol content between wines rated A and wines rated F. To do this, follow these steps:
+
+### 1. Using a normal distribution with known variance (again, using the variances you can calculate from the data), specify 2 hyperparameter choices, one fairly uninformative, one very informative, for the alcohol content in wines rated A and wines rated F. Note, you will need hyperparameters for each type of wine, but those hyperparameters can be the same for each type of wine.
+```{r}
+data %>%
+  ggplot(aes(x = alcohol)) + 
+  geom_density(fill = 'blue', alpha = 0.5)
+```
+```{r}
+mu_n = function(mu_0, sig2_0, x_bar, sig2, n){
+  return ((sig2*mu_0/(n*sig2_0 + sig2)) + (n*sig2_0*x_bar/(n*sig2_0 + sig2)))
+}
+
+sig2_n = function(sig2_0, sig2, n){
+  return (1/((n/sig2)+(1/sig2_0)))
+}
+
+eth_sig2_A = data %>%
+  filter(wine_quality == "A") %>%
+  summarize(var = var(alcohol)) %>%
+  pull(var)
+
+eth_mu_A = data %>%
+  filter(wine_quality == "A") %>%
+  summarize(mu = mean(alcohol)) %>%
+  pull(mu)
+
+eth_sig2_F = data %>%
+  filter(wine_quality == "F") %>%
+  summarize(var = var(alcohol)) %>%
+  pull(var)
+
+eth_mu_F = data %>%
+  filter(wine_quality == "F") %>%
+  summarize(mu = mean(alcohol)) %>%
+  pull(mu)
+
+un_prior = list(mu_0 = 0, sig2_0 = 666.666)
+in_prior = list(mu_0 = -0.666, sig2_0 = 1)
+```
+
+### 2. Calculate out the posterior distributions for alcohol content in wines with an F rating, and wines with an A rating. Because the posterior distribution will be a normal distribution with a value for the posterior mean and variance, you will have two means and two variances (per hyperparameter set, so you'll have 4 in total.)
+```{r, echo=FALSE}
+eth_post1_A = list(mu_n = mu_n(un_prior$mu_0, un_prior$sig2_0, eth_mu_A, 
+                               eth_sig2_A, nrow(data)),
+                   sig2_n = sig2_n(un_prior$sig2_0, eth_sig2_A, nrow(data))
+                   )
+eth_post1_F = list(mu_n = mu_n(un_prior$mu_0, un_prior$sig2_0, eth_mu_F, 
+                               eth_sig2_F, nrow(data)),
+                   sig2_n = sig2_n(un_prior$sig2_0, eth_sig2_F, nrow(data))
+                   )
+
+eth_post2_A = list(mu_n = mu_n(in_prior$mu_0, in_prior$sig2_0, eth_mu_A, 
+                               eth_sig2_A, nrow(data)),
+                   sig2_n = sig2_n(in_prior$sig2_0, eth_sig2_A, nrow(data))
+                   )
+eth_post2_F = list(mu_n = mu_n(in_prior$mu_0, in_prior$sig2_0, eth_mu_F, 
+                               eth_sig2_F, nrow(data)),
+                   sig2_n = sig2_n(in_prior$sig2_0, eth_sig2_F, nrow(data))
+                   )
+cat("Posterior for Ethanol Content (Uninformative Prior, Rating A):\n")
+cat("Mean (mu_n):", eth_post1_A$mu_n, "\n")
+cat("Variance (sig2_n):", eth_post1_A$sig2_n, "\n\n")
+
+cat("Posterior for Ethanol Content (Uninformative Prior, Rating F):\n")
+cat("Mean (mu_n):", eth_post1_F$mu_n, "\n")
+cat("Variance (sig2_n):", eth_post1_F$sig2_n, "\n\n")
+
+cat("Posterior for Ethanol Content (Informative Prior, Rating A):\n")
+cat("Mean (mu_n):", eth_post2_A$mu_n, "\n")
+cat("Variance (sig2_n):", eth_post2_A$sig2_n, "\n\n")
+
+cat("Posterior for Ethanol Content (Informative Prior, Rating F):\n")
+cat("Mean (mu_n):", eth_post2_F$mu_n, "\n")
+cat("Variance (sig2_n):", eth_post2_F$sig2_n, "\n")
+```
+
+### 3. These posterior distributions are still for the marginal distributions of alcohol content, and we are interested in if the alcohol content differs between the two levels of wine quality. Fortunately, the difference between normal distributions is a normal distribution, so we can hand calculate the posterior distribution of the differences between alcohol content:
+1. The posterior mean of the difference between two normal distributions with means μx and μy is simply μx − μy
+2. The posterior variance of the difference between two normal distributions (with variances σ2x and σ2y) is simply σ2x + σ2y.
+```{r, echo=FALSE}
+diff_un = list(mu = eth_post1_A$mu_n-eth_post1_F$mu_n,
+               sig2 = eth_post1_A$sig2_n+eth_post1_F$sig2_n)
+diff_in = list(mu = eth_post2_A$mu_n-eth_post2_F$mu_n,
+               sig2 = eth_post2_A$sig2_n+eth_post2_F$sig2_n)
+
+cat("Difference for Uninformative Prior:\n")
+cat("Mean (mu):", diff_un$mu, "\n")
+cat("Variance (sig2):", diff_un$sig2, "\n\n")
+
+cat("Difference for Informative Prior:\n")
+cat("Mean (mu):", diff_in$mu, "\n")
+cat("Variance (sig2):", diff_in$sig2, "\n")
+```
+### 4. Now, you should have the posterior distributions of the differences between alcohol contents for wines rated A vs F. You'll have 2 of these posterior distributions because you had two sets of priors, one uninformative, one highly informative.
+1. Calculate the 95% HDI for each of the posterior distributions. What does this interval tell you about the difference between the alcohol quantities in the two grades of wine? Would you consider the alcohol content to be 'significantly' different?
+
+```{r, echo=FALSE}
+set.seed(666)
+samples_un <- rnorm(10000, mean = diff_un$mu, sd = sqrt(diff_un$sig2))
+samples_in <- rnorm(10000, mean = diff_in$mu, sd = sqrt(diff_in$sig2))
+
+hdi_un <- hdi(samples_un, credMass = 0.95)
+hdi_in <- hdi(samples_in, credMass = 0.95)
+
+cat("HDI for Uninformative Prior (95%):\n")
+cat("Lower bound:", hdi_un[1], "\n")
+cat("Upper bound:", hdi_un[2], "\n")
+cat("Interval width:", hdi_un[2]-hdi_un[1], "\n\n")
+
+cat("HDI for Informative Prior (95%):\n")
+cat("Lower bound:", hdi_in[1], "\n")
+cat("Upper bound:", hdi_in[2], "\n")
+cat("Interval width:", hdi_in[2]-hdi_in[1], "\n")
+```
+#### The HDI doesn't include zero, so we can infer that for 95% of samples, the difference in means lie above zero. I would posit that this implies a significant quantity of differences are not zero.
+
+### 2. How does prior choice impact this?
+
+#### The bounds differ by one thousandth of a percent, so there was not a large shift. The interval itself is slightly smaller with an informative prior meaning we are more certain where the true difference in means lie. The difference in means would be impacted by our choices in prior means. Due to my choice of prior means being equal, there would likely be a bias towards the difference being closer to zero.  
+
+
+## Savvy students will notice I made an important assumption in specifying the likelihoods in part 1 and 2, that they are normal likelihoods with known variance. This was to simplify the posterior from a normal-inverse-gamma to just a normal distribution. However, technically, it's a bad assumption to make. In this extra credit, you will be writing a small Stan analysis to test the difference between alcohol quantities in wines rated A and wines rated F, when we don't assume we know the variance of the alcohol quantities.
+
+### 1. Write a Stan model that specifies normal-likelihoods with unknown means and variances. The priors for the means should be normal distributions, while the priors for variances should be a Half-Cauchy (note, this is not the conjugate prior, but we are going to be using Stan here, so we don't need to choose conjugate priors!). Then, using the transformed parameters block, calculate the difference between the means of the marginal distributions.
+```{r}
+data_eth_A <- data %>%
+  filter(wine_quality == "A") %>%
+  pull(alcohol)
+
+data_eth_F <- data %>%
+  filter(wine_quality == "F") %>%
+  pull(alcohol)
+
+
+eth_data <- list(
+  N1 = length(data_eth_A),
+  N2 = length(data_eth_F),
+  y1 = data_eth_A,
+  y2 = data_eth_F
+)
+
+stan_model1 <- "
+data {
+  int<lower=0> N1;
+  int<lower=0> N2;
+  real y1[N1];
+  real y2[N2];
+}
+parameters {
+  real mu1;
+  real mu2;
+  real<lower=0> sigma1;
+  real<lower=0> sigma2;
+}
+transformed parameters {
+  real diff;
+  diff = mu1 - mu2;
+}
+model {
+  mu1 ~ normal(0, 100);
+  mu2 ~ normal(0, 100);
+  sigma1 ~ cauchy(0, 50);
+  sigma2 ~ cauchy(0, 50);
+  
+  y1 ~ normal(mu1, sigma1);
+  y2 ~ normal(mu2, sigma2);
+}
+"
+
+fit1 <- stan(model_code = stan_model1, data = eth_data, iter = 2000, chains = 4)
+```
+
+```{r}
+stan_model2 <- "
+data {
+  int<lower=0> N1;
+  int<lower=0> N2;
+  real y1[N1];
+  real y2[N2];
+}
+parameters {
+  real mu1;
+  real mu2;
+  real<lower=0> sigma1;
+  real<lower=0> sigma2;
+}
+transformed parameters {
+  real diff;
+  diff = mu1 - mu2;
+}
+model {
+  mu1 ~ normal(0, 1);
+  mu2 ~ normal(0, 1);
+  sigma1 ~ cauchy(0, 1);
+  sigma2 ~ cauchy(0, 1);
+  
+  y1 ~ normal(mu1, sigma1);
+  y2 ~ normal(mu2, sigma2);
+}
+"
+
+fit2 <- stan(model_code = stan_model2, data = eth_data, iter = 2000, chains = 4)
+```
+```{r, echo=FALSE}
+
+print(fit1, pars = "diff")
+cat("\n\n")
+print(fit2, pars = "diff")
+
+```
+### 2. Run the Stan models using two sets of hyperparameters, the uninformative choices and a highly informative choice. Plot the posterior distributions of the differences in the means.
+
+```{r, echo=FALSE}
+posterior1 <- extract(fit1)$diff
+posterior2 <- extract(fit2)$diff
+
+v1 <- data.frame(diff = posterior1, prior = "Uninformative")
+v2 <- data.frame(diff = posterior2, prior = "Informative")
+comb <- bind_rows(v1, v2)
+
+ggplot(comb, aes(x = diff, fill = prior)) +
+  geom_density(alpha = 0.6) +
+  labs(title = "Difference in Means: Stan",
+       x = "Difference",
+       y = "Density") +
+  theme_minimal()
+```
+```{r, echo=FALSE}
+set.seed(666)  
+n_samples <- 1000
+
+samples_un <- rnorm(n_samples, mean = diff_un$mu, sd = sqrt(diff_un$sig2))
+
+samples_in <- rnorm(n_samples, mean = diff_in$mu, sd = sqrt(diff_in$sig2))
+
+df_samples_un <- data.frame(diff = samples_un, prior = "Sampled Uninformative")
+df_samples_in <- data.frame(diff = samples_in, prior = "Sampled Informative")
+
+df_combined <- bind_rows(df_samples_un, df_samples_in)
+
+ggplot(df_combined, aes(x = diff, fill = prior)) +
+  geom_density(alpha = 0.6) +
+  labs(title = "Difference in means: Closed Form",
+       x = "Difference",
+       y = "Density") +
+  theme_minimal()
+
+```
+
+### 3. How are these posteriors different/similar to those from the original analyses where we specified the variances as known? What was the impact of priors here?
+
+#### Providing variances as known quantities allows us to constrain the model to (ideally) more precise values. If they are incorrect, however, the bias will prevent the model from allowing for uncertainty. The Stan model appears to have captured more of the actual variability in both choices of priors. The uninformative prior choice is slightly transposed compared to the informative. In the closed form marginal analysis, the informative prior choice more approximated the normal distribution and the uninformative prior captured more variability. there was not as much of a difference between the expected values in this case.

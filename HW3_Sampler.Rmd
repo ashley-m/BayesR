@@ -1,0 +1,419 @@
+---
+title: "Homework 3"
+author: "Ashley Miller"
+date: "2024-11-7"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Sampler Stubs
+
+Below is code to get you started finishing the Gibbs Sampler I've asked you to complete in Homework 3. You can, and should, copy paste the entire codeblock into your Rmd, and complete appropriate lines. Remember to change the data load statements to be appropriate to your file system.
+
+```{r}
+#Make sure you install the Rmpfr library
+library(Rmpfr)
+library(tidyverse)
+dat = read.csv("coaldisasters-ds6040.csv")
+
+
+gibbs_sampler = function(iter, dat, a_mu, b_mu, a_lambda, b_lambda){
+  
+  mu_vec = vector()
+  lambda_vec = vector() 
+  k_prob_mat = matrix(nrow = iter+1, ncol = 111)
+  k_samp_vec = vector()
+  #Initialize sampler
+    mu_vec[1] = rgamma(1,a_mu, rate  = b_mu)
+  lambda_vec[1] = rgamma(1,a_lambda, rate = b_lambda)
+  k_prob_mat[1,] = rep(1/111, 111)
+  k_samp_vec[1] = 56
+  
+  #Sampler
+  for(i in 2:(iter+1)){
+    mu_vec[i] = rgamma(1, a_mu + sum(dat[1:k_samp_vec[i - 1], 2]), rate = b_mu + k_samp_vec[i - 1])
+    lambda_vec[i] = rgamma(1, a_lambda + sum(dat[(k_samp_vec[i - 1] + 1):112, 2]), rate = b_lambda + (112 - k_samp_vec[i - 1]))
+
+    
+    l_temp = vector()
+  for(j in 1:111){  
+    l_temp[j] = sum(log(mpfr(dpois(dat[1:j,2], lambda = rep(mu_vec[i],j)), precBits = 100))) + sum(log(mpfr(dpois(dat[(j+1):112,2], lambda = rep(lambda_vec[i],112-j)), precBits = 100)))
+  }
+  l_temp <- mpfr(l_temp, precBits = 100)
+  k_prob_mat[i,] = as.numeric(exp(l_temp)/sum(exp(l_temp))) 
+  k_samp_vec[i] = sample(size = 1,1:111, prob = k_prob_mat[i,])
+  }
+  toReturn = data.frame(mu = mu_vec, lambda = lambda_vec, k = k_samp_vec)
+  
+  return(toReturn)
+}
+set.seed(666)
+test = gibbs_sampler(1000, dat, a_mu = 1, b_mu = 1, a_lambda = 1, b_lambda = 1)
+
+
+```
+```{r}
+plot(test$mu, type = 'l', main = 'Trace Plot for mu', ylab = 'mu', xlab = 'Iteration')
+plot(test$lambda, type = 'l', main = 'Trace Plot for lambda', ylab = 'lambda', xlab = 'Iteration')
+
+```
+```{r}
+acf(test$mu, main = 'Autocorrelation for mu')
+acf(test$lambda, main = 'Autocorrelation for lambda')
+```
+```{r}
+ggplot(test, aes(x = lambda)) +
+  geom_density(fill = "skyblue", alpha = 0.5) +
+  labs(title = "Posterior Density of lambda", x = "lambda", y = "Density") +
+  theme_minimal()
+
+ggplot(test, aes(x = mu)) +
+  geom_density(fill = "orange", alpha = 0.5) +
+  labs(title = "Posterior Density of mu", x = "mu", y = "Density") +
+  theme_minimal()
+
+ggplot(test, aes(x = k)) +
+  geom_density(fill = "green", alpha = 0.5) +
+  labs(title = "Posterior Density of k", x = "k", y = "Density") +
+  theme_minimal()
+
+```
+```{r}
+eap_mu <- mean(test$mu)
+eap_lambda <- mean(test$lambda)
+
+credible_interval_mu <- quantile(test$mu, c(0.025, 0.975))
+credible_interval_lambda <- quantile(test$lambda, c(0.025, 0.975))
+
+k_freq <- table(test$k)
+sorted_k <- sort(k_freq, decreasing = TRUE)
+top_5_k <- as.numeric(names(sorted_k)[1:5])
+
+
+results <- data.frame( Parameter = c("mu", "mu", "lambda", "lambda", "Top 5 k values"), 
+                       Measure = c("EAP", "95% CI", "EAP", "95% CI", "Values"), 
+                       Value = c( eap_mu, paste(credible_interval_mu, collapse = " - "), 
+                                  eap_lambda, paste(credible_interval_lambda, collapse = " - "), 
+                                  paste(top_5_k, collapse = ", ") ) ) 
+
+print(results)
+```
+1.a The EAP for mu implies that before the changepoint, there were on average ~3.1 accidents in a year, with a 95% degree of credibility to be within ~2.6 and ~3.7 accidents in a year. The EAP for lambda implies that after the changepoint, there was on average ~.9 accidents, with a 95% degree of credibility to be within ~.7 and ~1.1 accidents. The most likely time of the changepoint found in the 1000 sampling iterations was between 1891 and 1892 (after the 41st year). 
+
+1.b This would be inappropriate to report for the changepoint because the year of the change is a discrete variable and could very well end up being a non-integer value, which doesn't make sense in our framework of the model.
+
+```{r}
+library(Rmpfr)
+gibbs_sampler_met = function(iter, dat, a_mu, b_mu, a_lambda, b_lambda){
+  
+  mu_vec = vector()
+  lambda_vec = vector() 
+  k_samp_vec = vector()
+  #Initialize sampler
+  mu_vec[1] = rgamma(1,a_mu, rate  = b_mu)
+  lambda_vec[1] = rgamma(1,a_lambda, rate = b_lambda)
+  k_samp_vec[1] = 56
+  
+  #Sampler
+  for(i in 2:(iter+1)){
+    mu_vec[i] = rgamma(1, a_mu + sum(dat[1:k_samp_vec[i - 1], 2]), rate = b_mu + k_samp_vec[i - 1])
+    lambda_vec[i] = rgamma(1, a_lambda + sum(dat[(k_samp_vec[i - 1] + 1):112, 2]), rate = b_lambda + (112 - k_samp_vec[i - 1]))
+    
+    k_proposal <- sample(1:112, 1)
+    k_current <- k_samp_vec[i - 1]
+    
+    
+    log_posterior_current <- sum(log(mpfr(dpois(dat[1:k_current, 2], lambda = rep(mu_vec[i], k_current)), precBits = 100))) +
+      sum(log(mpfr(dpois(dat[(k_current + 1):112, 2], lambda = rep(lambda_vec[i], 112 - k_current)), precBits = 100)))
+    
+    log_posterior_proposal <- sum(log(mpfr(dpois(dat[1:k_proposal, 2], lambda = rep(mu_vec[i], k_proposal)), precBits = 100))) +
+      sum(log(mpfr(dpois(dat[(k_proposal + 1):112, 2], lambda = rep(lambda_vec[i], 112 - k_proposal)), precBits = 100)))
+    
+    
+    acceptance_ratio <- exp(log_posterior_proposal - log_posterior_current)
+    
+    
+    if (runif(1) < acceptance_ratio) {
+      k_samp_vec[i] <- k_proposal
+    } else {
+      k_samp_vec[i] <- k_current
+    }
+  }
+  toReturn = data.frame(mu = mu_vec, lambda = lambda_vec, k = k_samp_vec)
+  
+  return(toReturn)
+}
+set.seed(666)
+test_met = gibbs_sampler_met(1000, dat, a_mu = 1, b_mu = 1, a_lambda = 1, b_lambda = 1)
+```
+```{r}
+plot(test_met$mu, type = 'l', main = 'Trace Plot for mu', ylab = 'mu', xlab = 'Iteration')
+plot(test_met$lambda, type = 'l', main = 'Trace Plot for lambda', ylab = 'lambda', xlab = 'Iteration')
+
+```
+```{r}
+acf(test_met$mu, main = 'Autocorrelation for mu')
+acf(test_met$lambda, main = 'Autocorrelation for lambda')
+```
+```{r}
+ggplot(test_met, aes(x = lambda)) +
+  geom_density(fill = "skyblue", alpha = 0.5) +
+  labs(title = "Posterior Density of lambda", x = "lambda", y = "Density") +
+  theme_minimal()
+
+ggplot(test_met, aes(x = mu)) +
+  geom_density(fill = "orange", alpha = 0.5) +
+  labs(title = "Posterior Density of mu", x = "mu", y = "Density") +
+  theme_minimal()
+
+ggplot(test_met, aes(x = k)) +
+  geom_density(fill = "green", alpha = 0.5) +
+  labs(title = "Posterior Density of k", x = "k", y = "Density") +
+  theme_minimal()
+
+```
+```{r}
+eap_mu_met <- mean(test_met$mu)
+eap_lambda_met <- mean(test_met$lambda)
+
+credible_interval_mu_met <- quantile(test_met$mu, c(0.025, 0.975))
+credible_interval_lambda_met <- quantile(test_met$lambda, c(0.025, 0.975))
+
+k_freq <- table(test_met$k)
+sorted_k <- sort(k_freq, decreasing = TRUE)
+top_5_k <- as.numeric(names(sorted_k)[1:5])
+
+
+results_met <- data.frame( Parameter = c("mu", "mu", "lambda", "lambda", "Top 5 k values"), 
+                       Measure = c("EAP", "95% CI", "EAP", "95% CI", "Values"), 
+                       Value = c( eap_mu_met, paste(credible_interval_mu_met, collapse = " - "), 
+                                  eap_lambda_met, paste(credible_interval_lambda_met, collapse = " - "), 
+                                  paste(top_5_k, collapse = ", ") ) ) 
+
+print(results_met)
+```
+With the implementation above, the EAP values for both mu and lambda are nearly the same as the pure Gibbs sampler. We also had a most likely changepoint value that was within 1 of the other method. The other probable changepoint values were not all the same, either. I would imagine that this is due to the randomness by which k's were proposed, leading there to be variability in the highly probable spaces explored. One issue with this implementation is that there is no guarantee that the convergence will happen with lower iterations. If there is an area of low acceptance probability being traversed, this would slow the convergence down. This could also have a hard time converging if the most probable values of k were highly dense and restricted to a smaller area.
+```{r}
+gibbs_sampler_met = function(iter, dat, a_mu, b_mu, a_lambda, b_lambda){
+  
+  mu_vec = vector()
+  lambda_vec = vector() 
+  k_samp_vec = vector()
+  #Initialize sampler
+  mu_vec[1] = rgamma(1,a_mu, rate  = b_mu)
+  lambda_vec[1] = rgamma(1,a_lambda, rate = b_lambda)
+  k_samp_vec[1] = 56
+  
+  #Sampler
+  for(i in 2:(iter+1)){
+    mu_vec[i] = rgamma(1, a_mu + sum(dat[1:k_samp_vec[i - 1], 2]), rate = b_mu + k_samp_vec[i - 1])
+    lambda_vec[i] = rgamma(1, a_lambda + sum(dat[(k_samp_vec[i - 1] + 1):112, 2]), rate = b_lambda + (112 - k_samp_vec[i - 1]))
+    
+    k_current <- k_samp_vec[i - 1] 
+    k_proposal <- k_current + sample(c(-1, 1), 1) 
+    if (k_proposal < 1) k_proposal <- 1 
+    if (k_proposal > 112) k_proposal <- 112
+    
+    
+    log_posterior_current <- sum(log(mpfr(dpois(dat[1:k_current, 2], lambda = rep(mu_vec[i], k_current)), precBits = 100))) +
+      sum(log(mpfr(dpois(dat[(k_current + 1):112, 2], lambda = rep(lambda_vec[i], 112 - k_current)), precBits = 100)))
+    
+    log_posterior_proposal <- sum(log(mpfr(dpois(dat[1:k_proposal, 2], lambda = rep(mu_vec[i], k_proposal)), precBits = 100))) +
+      sum(log(mpfr(dpois(dat[(k_proposal + 1):112, 2], lambda = rep(lambda_vec[i], 112 - k_proposal)), precBits = 100)))
+    
+    
+    acceptance_ratio <- exp(log_posterior_proposal - log_posterior_current)
+    
+    
+    if (runif(1) < acceptance_ratio) {
+      k_samp_vec[i] <- k_proposal
+    } else {
+      k_samp_vec[i] <- k_current
+    }
+  }
+  toReturn = data.frame(mu = mu_vec, lambda = lambda_vec, k = k_samp_vec)
+  
+  return(toReturn)
+}
+set.seed(666)
+test_met = gibbs_sampler_met(1000, dat, a_mu = 1, b_mu = 1, a_lambda = 1, b_lambda = 1)
+```
+```{r}
+plot(test_met$mu, type = 'l', main = 'Trace Plot for mu', ylab = 'mu', xlab = 'Iteration')
+plot(test_met$lambda, type = 'l', main = 'Trace Plot for lambda', ylab = 'lambda', xlab = 'Iteration')
+
+```
+```{r}
+acf(test_met$mu, main = 'Autocorrelation for mu')
+acf(test_met$lambda, main = 'Autocorrelation for lambda')
+```
+```{r}
+ggplot(test_met, aes(x = lambda)) +
+  geom_density(fill = "skyblue", alpha = 0.5) +
+  labs(title = "Posterior Density of lambda", x = "lambda", y = "Density") +
+  theme_minimal()
+
+ggplot(test_met, aes(x = mu)) +
+  geom_density(fill = "orange", alpha = 0.5) +
+  labs(title = "Posterior Density of mu", x = "mu", y = "Density") +
+  theme_minimal()
+
+ggplot(test_met, aes(x = k)) +
+  geom_density(fill = "green", alpha = 0.5) +
+  labs(title = "Posterior Density of k", x = "k", y = "Density") +
+  theme_minimal()
+
+```
+```{r}
+eap_mu_met <- mean(test_met$mu)
+eap_lambda_met <- mean(test_met$lambda)
+
+credible_interval_mu_met <- quantile(test_met$mu, c(0.025, 0.975))
+credible_interval_lambda_met <- quantile(test_met$lambda, c(0.025, 0.975))
+
+k_freq <- table(test_met$k)
+sorted_k <- sort(k_freq, decreasing = TRUE)
+top_5_k <- as.numeric(names(sorted_k)[1:5])
+
+
+results_met <- data.frame( Parameter = c("mu", "mu", "lambda", "lambda", "Top 5 k values"), 
+                       Measure = c("EAP", "95% CI", "EAP", "95% CI", "Values"), 
+                       Value = c( eap_mu_met, paste(credible_interval_mu_met, collapse = " - "), 
+                                  eap_lambda_met, paste(credible_interval_lambda_met, collapse = " - "), 
+                                  paste(top_5_k, collapse = ", ") ) ) 
+
+print(results_met)
+```
+In this iteration, the number of average accidents per year before the changepoint was marginally less and the CI remained a similar width, but the number of accidents after the changepoint remained the same as the other methods. The most probable k value in this method was the same as the pure Gibbs, which leads me to believe that it spent more time walking around that point since we only allowed it to step one unit either way.  
+```{r}
+library(brms)
+library(bayesplot)
+ww_tr = read.csv("whitewine-training-ds6040-1.csv")
+ww_ts = read.csv("whitewine-testing-ds6040.csv")
+```
+```{r}
+ww_tr <- ww_tr %>%
+  mutate(wine_quality = ifelse(wine_quality =='A', 1, 0))
+ww_ts <- ww_ts %>%
+  mutate(wine_quality = ifelse(wine_quality =='A', 1, 0))
+```
+```{r}
+set.seed(666)
+priors <- c(
+  set_prior("normal(0, 5)", class = "b"),
+  set_prior("normal(0, 5)", class = "Intercept")
+)
+f_mod = brm(wine_quality ~ ., data = ww_tr, prior = priors,
+            family = bernoulli(), cores = 12, seed = 666)
+
+priors <- c(
+  set_prior("normal(0, 2.5)", class = "b"),
+  set_prior("normal(1, 5)", class = "Intercept")
+)
+f_a_mod = brm(wine_quality ~ ., data = ww_tr[ww_tr$wine_quality==1, ], prior = priors,
+              family = bernoulli(), cores = 12, seed = 666)
+```
+```{r}
+summary(f_mod)
+loo(f_mod)
+waic(f_mod)
+```
+2. Given the model above, the residual sugar, density, and pH are the best predictors when considering the whole dataset. Residual sugar and pH both have positive effects on the log-odds, and density has a negative effect. None of the three CI's include zero, so there is credibility in the claim that they result in a change in odds of classifying a wine. The intercept also has a strong negative effect, and its CI does not include zero either. This means that when all other predictors are zero, there is a negative effect on the log odds of the wine being classified as A grade.
+```{r}
+summary(f_a_mod)
+loo(f_a_mod)
+waic(f_a_mod)
+```
+In this A wines only model, the three largest effects are chlorides, volatile acidity, and sulphates. Their CI's all include zero, which doesn't allow us to make the same statements regarding their effects on the log odds of the wine's classification. The intercept itself is truly the strongest predictor in this case, meaning that when all other predictors are equal to zero there is a positive effect on the log odds that the wine will be classified as an A wine (which we would expect given this "control" group of only A grade wines). 
+```{r}
+set.seed(666)
+priors <- c(
+  set_prior("normal(0, 5)", class = "b"),
+  set_prior("normal(0, 5)", class = "Intercept")
+)
+f_mod_s = brm(wine_quality ~ residual.sugar + density + pH, data = ww_tr, prior = priors,
+            family = bernoulli(), cores = 16, seed = 666)
+
+priors <- c(
+  set_prior("normal(0, 2.5)", class = "b"),
+  set_prior("normal(1, 5)", class = "Intercept")
+)
+f_a_mod_s = brm(wine_quality ~ chlorides + volatile.acidity + sulphates, data = ww_tr[ww_tr$wine_quality==1, ], prior = priors,
+              family = bernoulli(), cores = 16, seed = 666)
+```
+```{r}
+summary(f_mod_s)
+loo(f_mod_s)
+waic(f_mod_s)
+```
+After refitting the model with only the three predictors chosen, we see similar effects from the predictors and an increase in both the LOO cross validation and WAIC metrics. The LOO allows us to gauge generalizability by trying to predict within the training set and an increase is expected since the models are less complex, and therefore more fitted. The WAIC uses the entire dataset to similarly evaluate the model and penalizes a more complex model. From this change, we may infer a marginal decrease in performance due to a lack of complexity of the simpler model. As can be seen in the plots below, the trace plots do not contain any trends or separations of the chains and imply that the entirety of the posterior distributions were traversed uniformly within each predictor. None of the predictors in the plot cross zero, which allow us to be fairly certain their effects are not nullified.
+```{r}
+mcmc_trace(as.array(f_mod_s))
+mcmc_intervals(as.array(f_mod_s), pars = c('b_residual.sugar', 'b_density', 'b_pH', 'b_Intercept'))
+```
+```{r}
+summary(f_a_mod_s)
+loo(f_a_mod_s)
+waic(f_a_mod_s)
+```
+Again, the effects remain in the smaller model. This time, we see that there is a decrease in both model metrics, implying a marginal increase in performance. I would be wary in this situation because we know that the training set is only A grade wines, and therefore would not likely generalize well. As seen in the plots below, the trace plots don't display any trends or separations of the different chains. The predictors all cross zero except for the intercept.
+```{r}
+mcmc_trace(as.array(f_a_mod_s))
+mcmc_intervals(as.array(f_a_mod_s), pars = c('b_chlorides', 'b_volatile.acidity', 'b_sulphates', 'b_Intercept'))
+```
+```{r}
+p_hat = predict(f_mod_s, newdata = ww_ts, type = "response")
+p_hat_a = predict(f_a_mod_s, newdata = ww_ts, type = "response")
+library(pROC)
+
+roc_obj <- roc(ww_ts$wine_quality, p_hat[, "Estimate"])
+opt_threshold <- coords(roc_obj, "best", ret = "threshold")
+print(opt_threshold)
+
+roc_obj_a <- roc(ww_ts$wine_quality, p_hat_a[, "Estimate"])
+opt_threshold_a <- coords(roc_obj_a, "best", ret = "threshold")
+print(opt_threshold_a)
+
+```
+The method used, Youden's J Statistic, maximizes the difference between the true positive rate and the false positive rate.
+```{r}
+class_hat = ifelse(p_hat[, "Estimate"]>opt_threshold$threshold, 1, 0)
+class_hat_a = ifelse(p_hat_a[, "Estimate"]>opt_threshold_a$threshold, 1, 0)
+
+actual_class <- ww_ts$wine_quality
+confusion_matrix <- table(Predicted = class_hat, Actual = actual_class)
+print(confusion_matrix)
+
+confusion_matrix_a <- table(Predicted = class_hat_a, Actual = actual_class)
+print(confusion_matrix_a)
+```
+```{r}
+TP <- confusion_matrix[2, 2]
+FP <- confusion_matrix[2, 1]
+TN <- confusion_matrix[1, 1]
+FN <- confusion_matrix[1, 2]
+
+classification_rate <- (TP + TN) / sum(confusion_matrix)
+
+misclassification_rate <- 1 - classification_rate
+
+print(paste("Classification Rate: ", classification_rate))
+print(paste("Misclassification Rate: ", misclassification_rate))
+```
+```{r}
+TP <- confusion_matrix_a[2, 2]
+FP <- confusion_matrix_a[2, 1]
+TN <- confusion_matrix_a[1, 1]
+FN <- confusion_matrix_a[1, 2]
+
+classification_rate <- (TP + TN) / sum(confusion_matrix_a)
+
+misclassification_rate <- 1 - classification_rate
+
+print(paste("Classification Rate: ", classification_rate))
+print(paste("Misclassification Rate: ", misclassification_rate))
+```
+From the calculations seen above, the A grade only model performed slightly worse with a 64.2% classification rate versus the 71% classification rate of the model that used the entire dataset.

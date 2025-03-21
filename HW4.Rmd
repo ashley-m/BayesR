@@ -1,0 +1,567 @@
+---
+title: "Barstucks Eastern Region Sales Report"
+author: "Ashley Miller"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(brms)
+library(skimr)
+library(bayesplot)
+library(posterior)
+```
+
+```{r load, echo=FALSE}
+coff <- read.csv("sales-ds6040.csv")
+```
+# Introduction
+
+  In this report we examine calendar year 2024 sales metrics for Barstucks' Eastern Region. The region is comprised of 20 stores given a unique id starting with store 0 and ending with store 19. Our data includes 24 sales observations for each store. One each for the food and coffee sales for the month. The food column contains a 0 or 1 depending on whether the sales from that row are coffee or food, respectively. Each store's manager has been assigned a qualitative emotion rating that describes their level of conscientiousness and their level of neuroticism. They range from negative to positive values, indicating the degree above or below the average of each quality. Sales have been standardized to be centered at zero with a standard deviation of one. We have posed the following question: what is the effect of the stores' manager's emotional qualities on the sales of food and coffee, and are they different?
+
+## Exploratory Data Analysis
+
+  The figure below shows the distribution of the values of each sales, conscientiousness (con), and neuroticism (neur). The height of each bar indicates the incidence of the feature whose value is represented by the x-axis. Note that though the figures are aligned, the y-axes scales differ. One can see how they deviate from the mean marked by the dashed black line. Notably both emotional qualities have a mean that lies below 0 (as well as outliers towards the extremes).
+```{r eda1, echo=FALSE}
+coff_long <- coff %>%
+  pivot_longer(cols = -c(food,store), names_to = "Feature", values_to = "Observation")
+
+# Calculate mean and median for each feature
+stats <- coff_long %>%
+  group_by(Feature) %>%
+  summarise(mean = mean(Observation))
+
+# Create the histogram with measure of centrality
+ggplot(coff_long, aes(x = Observation)) +
+  geom_histogram(binwidth = .25, fill = "green", alpha = 0.5) +
+  facet_wrap(~ Feature, scales = "free") +
+  theme_minimal() +
+  labs(title = "Density by Feature", x = "Feature (standardized)", y = "Count") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  geom_vline(data = stats, aes(xintercept = mean, color = "Mean"), linetype = "dashed", linewidth = 1, alpha = 0.5) +
+  scale_color_manual(name = "Legend", values = c("Mean" = "black"))
+```
+
+In the figures below, we further examine the emotional quality scores and sales of each store individually. The box plots show first overall sales, then the two types of sales juxtaposed. 
+
+```{r conbar, echo=FALSE}
+# Calculate average conscientiousness and neuroticism for each store
+summary_stats <- coff %>%
+  group_by(store) %>%
+  summarise(
+    constant_neur = first(neur),
+    constant_con = first(con)
+  )
+
+# Bar graph for conscientiousness by store
+ggplot(summary_stats, aes(x = as.factor(store), y = constant_con)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  labs(title = "Conscientiousness by Store",
+       x = "Store",
+       y = "Conscientiousness") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 8))  # Adjust text angle and size for readability
+
+```
+```{r neurbar, echo=FALSE}
+# Bar graph for neuroticism by store
+ggplot(summary_stats, aes(x = as.factor(store), y = constant_neur)) +
+  geom_bar(stat = "identity", fill = "orange") +
+  labs(title = "Neuroticism by Store",
+       x = "Store",
+       y = "Neuroticism") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 8))  # Adjust text angle and size for readability
+
+```
+
+```{r salesbox, echo=FALSE}
+ggplot(coff, aes(x = as.factor(store), y = sales)) +
+  geom_boxplot() +
+  labs(title = "Distribution of Sales by Store",
+       x = "Store",
+       y = "Sales") +
+  theme(legend.position = "none")
+```
+```{r saletype, echo=FALSE}
+
+# Create a factor for the food variable
+coff$food_label <- factor(coff$food, levels = c(0, 1), labels = c("Coffee", "Food"))
+
+# Boxplot for sales, dodged by food type and separated by store
+ggplot(coff, aes(x = as.factor(store), y = sales, fill = food_label)) +
+  geom_boxplot(position = position_dodge(width = 0.8)) +  # Dodge the boxplots to place them side by side
+  labs(title = "Sales Distribution by Store and Sale Type",
+       x = "Store",
+       y = "Sales",
+       fill = "Sale Type") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 8))
+
+```
+
+## Hierarchical Model Specification
+
+  Creating a model for these data requires an approach that accounts for the different stratifying features within the data, namely the individual stores and the dichotomy between coffee and food sales. First we want to describe our model using an equation to account for our variables and their effects.
+
+$$\begin{aligned} \text{sales}_{ij} & = \beta_{sales} + \beta_{con} \cdot \text{con}_{ij} + \beta_{food} \cdot \text{food}_{i} + \beta_{con \cdot food} \cdot \text{con}_{ij} \cdot \text{food}_{i} \\ & \quad + \beta_{neur} \cdot \text{neur}_{ij} + \beta_{neur \cdot food} \cdot \text{neur}_{ij} \cdot \text{food}_{i} \\ & \quad + (u_{0j} + u_{1j} \cdot \text{food}_i) + \epsilon_{ij} \end{aligned} $$
+  This equation specifies that the given sales for a month at a certain store is the sum of the following: the baseline coffee sales for any store, the product of the conscientiousness coefficient and conscientiousness, the food coefficient (which is nullified for sales where food is 0), the product of conscientiousness-food interaction coefficient and conscientiousness (with the same nullification), the product of the neuroticism coefficient and neuroticism, the product of neuroticism-food interaction coefficient and neuroticism (with the same nullification), the effect of the store on baseline sales, the effect of the store on food sales, and the residual error of the model.
+  Once this is conceptualized, we can begin to specify the distributions that underly the model framework. We posit that the sales distribution overall approximates the normal distribution, and that the random effects of store and food-by-store are multivariate normal. One would argue, too, that the store and food versus coffee sales groups are minimally correlated if at all. We also specify that the errors produced by our model will be normally distributed.
+
+The hierarchical model is then specified as follows:
+
+$$
+\begin{aligned}
+    \text{sales}_{ij} & \sim \text{Normal}(\mu_{ij}, \sigma^2) \\ 
+    \mu_{ij} & = \beta_0 + \beta_1 \cdot \text{con}_j + \beta_2 
+    \cdot \text{food}_i + \beta_3 \cdot \text{con}_j \cdot 
+    \text{food}_i \\ & \quad + \beta_4 \cdot \text{neur}_j + \beta_5 \cdot \text{neur}_j \cdot \text{food}_i \\ & \quad + (u_{0j} + u_{1j} \cdot \text{food}_i) \\ \begin{pmatrix} u_{0j} \\ u_{1j} \end{pmatrix} & \sim \text{MVN}\left( \begin{pmatrix} 0 \\ 0 \end{pmatrix}, \Sigma \right) \\
+    \Sigma & = \mathbf{L} \mathbf{L}^\top \\
+    \epsilon_{ij} & \sim \text{Normal}(0, \sigma^2)
+\end{aligned}
+$$
+Where:  
+* \( \text{sales}_{ij} \) denotes the outcome variable for observation \( i \) in group \( j \).  
+* \( \text{con}_j \) is the conscientiousness predictor variable.  
+* \( \text{food}_i \) is the food indicator variable.  
+* \( \text{neur}_j \) is the neuroticism predictor variable.  
+* \( \beta_0 \) is the intercept representing baseline coffee sales  
+* \( \beta_1, \beta_2, \beta_3, \beta_4, \beta_5 \) are the coefficients for the predictors and their interactions.  
+* \( u_{0j}, u_{1j} \) represent the group-level effects for each store.  
+* \( \epsilon_{ij} \) is the observation-level error term.  
+* \( \Sigma \) is the standard deviation of the group-level effects.  
+* \( \sigma \) is the standard deviation of the observation-level errors.  
+* \( \mathbf{L} \) is the Cholesky factor of the correlation matrix for the random effects.  
+
+The prior distributions we chose for these parameters are specified as follows:
+
+$$
+\begin{aligned}
+    \beta_0, \beta_1, \beta_2, \beta_3, \beta_4, \beta_5 & \sim \text{Normal}(0, 5) \\
+    \sigma & \sim \text{Cauchy}(0, 2) \\
+    \Sigma & \sim \text{Cauchy}(0, 2) \\
+    \mathbf{L} & \sim \text{LKJ}(1.5) \\
+\end{aligned}
+$$
+    Bayesian inference begins with prior information about the parameters to form the basis of the model before incorporating the observed data. It iteratively updates its choices of parameters by using the probability of the observed data given that specific set of parameters using the likelihood function, which we have specified as \( \mathcal{L}(\beta, u, \sigma | \text{sales}) = \prod_{i,j} \text{Normal}(\text{sales}_{ij} | \mu_{ij}, \sigma^2) \). It continues to inform the next choice of model in this way until it eventually converges to the most probable version of the model given the data observed.
+  Our choices for priors here were fairly uninformed. The \( \beta \) coefficients each have large standard deviations and are centered at zero, allowing the data to inform the model. The error in our observation and group level effects represented by \( \sigma \) and \( \Sigma \), respectively, are informed by a Cauchy distribution which has a greater capacity to account for extreme values. The Cholesky factor was chosen as such because values over 1 are informed by the idea that the two group level features are minimally correlated.
+  Below you will see the output from the model summary which reports both estimates for the coefficients and 95% credible intervals. We will visually explore some of these values further to see how they affect our interpretation of the model. Preliminarily, we can see conscientiousness is estimated to positively affect both coffee and food sales. Neuroticism seems to negatively affect coffee sales, but slightly positively affects food sales.
+```{r brms, include=FALSE}
+fit <- brm(
+  sales ~ con * food + neur * food + ( food | store),
+  data = coff,
+  family = gaussian(),
+  prior = c(
+    set_prior("normal(0, 5)", class = "b"),
+    set_prior("normal(0, 5)", class = "Intercept"),
+    set_prior("cauchy(0, 2)", class = "sd"),
+    set_prior("cauchy(0, 2)", class = "sigma"),
+    set_prior("lkj_corr_cholesky(1.5)", class = "L")
+  )
+)
+```
+```{r modsum, echo=FALSE}
+summary(fit)
+#prior_summary(fit)
+```
+
+## Interpreting The Model
+
+  In the plots below, we can see the distribution of the fixed effect \( \beta \) parameters, which are not dictated by the store group structure. The intercept, or \( \beta_0 \), is the baseline coffee sales. B_con:food and b_food:neur represent the interaction between the emotional qualities and whether the sales are food, capturing the effect of the combination of the two. This effect is an offset that affects the baseline sale amount encoded in the intercept term. The intercept (baseline sales regardless of store), conscientiousness and coffee sales, neuroticism and coffee sales and the interaction offset of neuroticism and a food-type sale have 95% quantile regions (shaded light blue) that include zero, meaning they could have a nullified effect on the sales overall (these differ from the highest probability density credible intervals above, which may be narrower depending on symmetry). The other parameters are very likely to have some effect. For the combination of conscientiousness with food-type sales, this is a positive effect. The differential for food-type sales regardless of emotional quality has a negative effect.
+
+```{r param, echo=FALSE}
+# Extract samples from the brms model
+samples <- as.array(fit)
+# Posterior distributions as area plots
+mcmc_areas(samples, pars = c("b_con", "b_neur", "b_food", "Intercept", "b_con:food", "b_food:neur"), prob = 0.95)
+
+```
+
+  The two sets of plots below are the visualization of group level effects \( u_{1j}, u_{0j} \), respectively, by store. The first is accompanied by the estimated error above. The second has the 95% credible interval bars determined by the distribution of that random variable, which implies nearly total certainty that the parameter lies within those bounds (again this differs from the estimated error in the first graph because it is derived from the posterior density which means that the error above and below may be asymmetric). Notably, stores 12, 13, 14, 16, and 17 are the only stores whose baseline sales effect intervals lie entirely above or below zero, meaning they deviate significantly from the average sales effect across all stores. Stores 2, 8, 13, and 15 show similar results with respect to the group level effect of food on sales between stores.
+```{r ranef, echo=FALSE}
+random_effects <- ranef(fit)
+# Convert random effects to data frame
+random_effects_df <- as.data.frame(random_effects$store)
+random_effects_df$store <- rownames(random_effects_df)
+
+random_effects_df <- random_effects_df %>% select(store, Estimate.Intercept, Est.Error.Intercept, Estimate.food, Est.Error.food)
+# Reshape data to long format
+random_effects_long <- gather(random_effects_df, key = "effect", value = "estimate", -store)
+
+# Convert store IDs to numeric, preserving the order
+random_effects_long$store <- as.factor(random_effects_long$store)
+sorted_store_ids <- sort(as.numeric(as.character(levels(random_effects_long$store))))
+
+# Refactor store IDs based on sorted order
+random_effects_long$store <- factor(random_effects_long$store, levels = sorted_store_ids)
+
+# Define new labels
+facet_labels <- c(
+  "Est.Error.food" = "Estimated Error Group-level Food Sales Offset",
+  "Est.Error.Intercept" = "Estimated Error in Group-level Sales Effect",
+  "Estimate.food" = "Group-level Food Sales Offset Estimate",
+  "Estimate.Intercept" = "Group-level Sales Effect Estimate"
+)
+
+# Plot random effects
+ggplot(random_effects_long, aes(x = store, y = estimate, color = effect)) +
+  geom_point() +
+  geom_hline(yintercept = 0, color = "black", linetype = "dashed") +
+  geom_line(aes(group = effect)) +
+  facet_wrap(~ effect, labeller = labeller(effect = facet_labels), scales = "fixed") +
+  labs(title = "Random Effects by Store",
+       x = "Store",
+       y = "Estimate",
+       color = "Effect") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 4), legend.position = "none")
+
+```
+```{r ranefci, echo=FALSE}
+# Extract random effects
+random_effects <- ranef(fit)$store
+
+# Convert to a data frame for easy manipulation
+random_effects_df <- as.data.frame(random_effects)
+random_effects_df$store <- rownames(random_effects)
+
+# Reshape data to long format
+
+random_effects_long <- gather(random_effects_df, key = "effect", value = "estimate", Estimate.Intercept, Estimate.food)
+random_effects_long <- random_effects_long %>%
+  mutate(lower = case_when(
+           effect == "Estimate.Intercept" ~ Q2.5.Intercept,
+           effect == "Estimate.food" ~ Q2.5.food),
+         upper = case_when(
+           effect == "Estimate.Intercept" ~ Q97.5.Intercept,
+           effect == "Estimate.food" ~ Q97.5.food))
+
+# Convert store IDs to numeric, preserving the order
+random_effects_long$store <- as.factor(random_effects_long$store)
+sorted_store_ids <- sort(as.numeric(as.character(levels(random_effects_long$store))))
+
+# Refactor store IDs based on sorted order
+random_effects_long$store <- factor(random_effects_long$store, levels = sorted_store_ids)
+
+# Plot random effects with error ribbons
+ggplot(random_effects_long, aes(x = store, y = estimate, color = effect)) +
+  geom_point() +
+  geom_line(aes(group = effect)) +
+  geom_errorbar(aes(ymin = lower, ymax = upper, color = effect), width = 0.2) +
+  facet_wrap(~ effect, labeller = labeller(effect = facet_labels), scales = "fixed") +
+  hline_0(color = "black", linetype = "dashed") +
+  labs(title = "Random Effects by Store with 95% Credible Intervals",
+       x = "Store",
+       y = "Estimate",
+       color = "Effect",
+       fill = "Effect") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 0, size = 4), legend.position = "none")
+
+
+```
+
+  To examine the random effects even further, we can examine the posterior distributions of the random effect intercept parameter, \( u_{0j} \), as a density plot. First we can place them all on the same plot to see which, if any, are set apart. We can see that store 14 seems to have higher sales than most of the other stores. The second figure breaks each store into its own plot to more easily see the individual shapes of the density plots. The dotted lines represent the mean sales across all stores.
+
+```{r post, echo=FALSE, warning=FALSE}
+# Extract posterior samples
+posterior_samples <- as_draws_df(fit)
+# Extract store-level random effects
+store_effects <- posterior_samples %>%
+  select(starts_with("r_store["))
+
+# Reshape data to long format
+store_effects_long <- store_effects %>%
+  pivot_longer(cols = everything(), names_to = "store", values_to = "effect") %>%
+  mutate(store = gsub("r_store\\[|\\]", "", store)) %>%
+  separate(store, into = c("store", "term"), sep = ",") %>%
+  filter(term == "Intercept") %>%
+  select(-term)
+
+store_effects_long$store <- factor(store_effects_long$store, levels = sort(as.numeric(unique(store_effects_long$store))))
+
+# Plot density for each store
+ggplot(store_effects_long, aes(x = effect, fill = store)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Posterior Distributions of Baseline Sales by Store",
+       x = "Effect on Sales (standardized)",
+       y = "Density",
+       fill = "Store") +
+  theme_minimal() +
+  theme(legend.position = "bottom",        # Position legend at the bottom
+        legend.key.size = unit(0.5, "lines"),  # Reduce legend key size
+        legend.text = element_text(size = 8)) +  # Reduce legend text size
+  guides(fill = guide_legend(nrow = 2))  # Arrange the legend in 3 rows
+
+
+```
+
+```{r postfacet, echo=FALSE}
+# Plot density for each store with facet_wrap
+ggplot(store_effects_long, aes(x = effect, fill = store)) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~ store, scales = "fixed") +
+  geom_vline(xintercept = 0, linetype = "dashed", color="blue")+
+  labs(title = "Posterior Distributions of Baseline Sales by Store",
+       x = "Effect on Sales (standardized)",
+       y = "Density") +
+  theme_minimal() +
+  theme(legend.position = "None")
+```
+  
+  Ultimately we were tasked with determining which of the stores was overperforming after controlling for the effects of the manager's emotional qualities. We can see from the ordered plot below that stores 14, 17, 15, and 13 are performing better than the model would estimate given that their credible intervals lie completely above the zero line.
+```{r postbirdseye, echo=FALSE}
+# Extract fitted values (point estimates and credible intervals)
+fitted_values <- fitted(fit, summary = TRUE)
+
+# Combine with the original data to get store information
+fitted_df <- as.data.frame(fitted_values)
+fitted_df$store <- coff$store
+
+# Summarize fitted values to get mean, lower, and upper credible intervals
+fitted_summary <- fitted_df %>%
+  group_by(store) %>%
+  summarise(
+    mean_estimate = mean(Estimate),
+    lower_ci = mean(Q2.5),
+    upper_ci = mean(Q97.5)
+  ) %>%
+  arrange(desc(mean_estimate))
+
+fitted_summary$store <- factor(fitted_summary$store, levels = fitted_summary$store)
+
+# Plot point estimates and credible intervals for each store on the same graph
+ggplot(fitted_summary, aes(x = as.factor(store), y = mean_estimate)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = lower_ci, ymax = upper_ci), width = 0.2) +
+  labs(title = "Point Estimates and 95% Credible Intervals for Sales by Store",
+       x = "Store",
+       y = "Effect on Sales") +
+  hline_0(color = "blue", linetype = "dashed") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 8),  # Adjust text angle and size for readability
+        legend.position = "none")  # Remove legend
+```
+
+  The next two sets of graphs help illustrate the effect of the emotional qualities on the sales observations for each store. There is a regression line fitted to the expected _a posteriori_ (EAP) values for each store's sales (which illustrate the most likely value) and display that with the observed sales mean and the EAP values by store. Here the center of the black diamonds represent the EAP and the grey circles represent the observed mean. The slope of the line represents the approximate effect of the emotional quality on change in sales. From the figure below, one can see that conscientiousness seems to have a positive effect on sales when the type of sale is food.
+```{r confood, echo=FALSE}
+# Filter data for food
+coff_food <- coff %>%
+  filter(food == 1)
+
+# Extract fitted values from the brms model for food
+fitted_values_food <- fitted(fit, newdata = coff_food)
+coff_food$predicted_sales_food <- fitted_values_food[, "Estimate"]
+
+# Calculate min, max, and mean sales for each store and include con
+store_stats_con_food <- coff_food %>%
+  group_by(store) %>%
+  summarise(
+    min_sales = min(sales),
+    max_sales = max(sales),
+    mean_sales = mean(sales),
+    con = first(con)  # Extract the constant con value for each store
+  )
+
+# Plot actual sales, regression line, and EAP marks for conscientiousness (Food)
+ggplot(coff_food, aes(x = con, y = sales, color = as.factor(store))) +
+  geom_point() +  # Add points for each observation (actual sales)
+  geom_smooth(aes(y = predicted_sales_food), method = "lm", linetype = "dashed", color = "black", size = 1, se = FALSE) +  # Add dashed regression line based on EAP values using lm
+  geom_text(data = store_stats_con_food, aes(x = con, y = max_sales, label = store), angle = 90, vjust = -0.5, size = 3, show.legend = FALSE) +  # Label lines with store numbers
+  geom_point(aes(x = con, y = predicted_sales_food), shape = 5, size = 4, color = "black") +  # Mark EAP estimates with "X"
+  geom_point(data = store_stats_con_food, aes(x = con, y = mean_sales), size = 2, shape = 21, fill = "white", color = "black", stroke = 1.5, alpha = 0.5) +  # Add observed means as large white points with black border
+  labs(title = "Sales vs. Conscientiousness (Food) with EAP Regression Line",
+       x = "Conscientiousness",
+       y = "Sales",
+       color = "Store") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 8),  # Adjust text angle and size for readability
+        legend.position = "bottom",  # Position the legend at the bottom
+        legend.direction = "horizontal") +  # Arrange legend in horizontal direction
+  guides(color = guide_legend(nrow = 2, byrow = TRUE))  # Arrange legend in 2 rows
+
+```
+
+  In the next figure, you can see that there is still an upward trend when the sale type is coffee, but it is less noticeable. I wanted to examine store number 12's discrepancy between the EAP and the observed mean, so I referenced the conscientiousness values to confirm that store 12's manager did indeed have a fairly negative score, -0.7. I would argue that score should be negatively affecting sales for store 12.
+```{r concoff, echo=FALSE}
+
+# Filter data for coffee
+coff_coffee <- coff %>%
+  filter(food == 0)
+
+# Extract fitted values from the brms model for coffee
+fitted_values_coffee <- fitted(fit, newdata = coff_coffee)
+coff_coffee$predicted_sales_coffee <- fitted_values_coffee[, "Estimate"]
+
+# Calculate min, max, and mean sales for each store and include con
+store_stats_con_coffee <- coff_coffee %>%
+  group_by(store) %>%
+  summarise(
+    min_sales = min(sales),
+    max_sales = max(sales),
+    mean_sales = mean(sales),
+    con = first(con)  # Extract the constant con value for each store
+  )
+
+# Plot actual sales, regression line, and EAP marks for conscientiousness (Coffee)
+ggplot(coff_coffee, aes(x = con, y = sales, color = as.factor(store))) +
+  geom_point() +  # Add points for each observation (actual sales)
+  geom_smooth(aes(y = predicted_sales_coffee), method = "lm", linetype = "dashed", color = "black", size = 1, se = FALSE) +  # Add dashed regression line based on EAP values using lm
+  geom_text(data = store_stats_con_coffee, aes(x = con, y = max_sales, label = store), angle = 90, vjust = -0.5, size = 3, show.legend = FALSE) +  # Label lines with store numbers
+  geom_point(aes(x = con, y = predicted_sales_coffee), shape = 5, size = 4, color = "black") +  # Mark EAP estimates with "X"
+  geom_point(data = store_stats_con_coffee, aes(x = con, y = mean_sales), size = 2, shape = 21, fill = "white", color = "black", stroke = 1.5, alpha = 0.5) +  # Add observed means as large white points with black border
+  labs(title = "Sales vs. Conscientiousness (Coffee) with EAP Regression Line",
+       x = "Conscientiousness",
+       y = "Sales",
+       color = "Store") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 8),  # Adjust text angle and size for readability
+        legend.position = "bottom",  # Position the legend at the bottom
+        legend.direction = "horizontal") +  # Arrange legend in horizontal direction
+  guides(color = guide_legend(nrow = 2, byrow = TRUE))  # Arrange legend in 2 rows
+```
+
+  In the plot below, you can see that the trend is negative for food sales, but not as steep either. 
+```{r neurfood, echo=FALSE}
+# Calculate min, max, and mean sales for each store and include neur
+store_stats_neur_food <- coff_food %>%
+  group_by(store) %>%
+  summarise(
+    min_sales = min(sales),
+    max_sales = max(sales),
+    mean_sales = mean(sales),
+    neur = first(neur)  # Extract the constant neur value for each store
+  )
+
+# Plot actual sales, regression line, and EAP marks for neuroticism (Food)
+ggplot(coff_food, aes(x = neur, y = sales, color = as.factor(store))) +
+  geom_point() +  # Add points for each observation (actual sales)
+  geom_smooth(aes(y = predicted_sales_food), method = "lm", linetype = "dashed", color = "black", size = 1, se = FALSE) +  # Add dashed regression line based on EAP values using lm
+  geom_text(data = store_stats_neur_food, aes(x = neur, y = max_sales, label = store), angle = 90, vjust = -0.5, size = 3, show.legend = FALSE) +  # Label lines with store numbers
+  geom_point(aes(x = neur, y = predicted_sales_food), shape = 5, size = 4, color = "black") +  # Mark EAP estimates with "X"
+  geom_point(data = store_stats_neur_food, aes(x = neur, y = mean_sales), size = 2, shape = 21, fill = "white", color = "black", stroke = 1.5, alpha = 0.5) +  # Add observed means as large white points with black border
+  labs(title = "Sales vs. Neuroticism (Food) with EAP Regression Line",
+       x = "Neuroticism",
+       y = "Sales",
+       color = "Store") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 8),  # Adjust text angle and size for readability
+        legend.position = "bottom",  # Position the legend at the bottom
+        legend.direction = "horizontal") +  # Arrange legend in horizontal direction
+  guides(color = guide_legend(nrow = 2, byrow = TRUE))  # Arrange legend in 2 rows
+
+
+```
+
+  The slope for the coffee sales affected by neuroticism is a bit steeper, which implies that this may be affecting these coffee-addicted customers more negatively when faced with a manager whose neuroses are intractable. Examining store 12's neuroticism score, we can see that a near zero value likely means that his mental illness had no effect on the sales for that year. Ultimately these results wouldn't allow us to conclusively infer anything about the stores performance like the earlier plot of the random effect on sales (which controls for the fixed effects of our model, namely the emotional quality and the interactions between those and sales type), but they do illustrate the uncertainty inherent to our model, allowing us to ground our interpretation in reality, rather than purely relying on the model's results.
+```{r neurcoffee, echo=FALSE}
+# Calculate min, max, and mean sales for each store and include neur
+store_stats_neur_coffee <- coff_coffee %>%
+  group_by(store) %>%
+  summarise(
+    min_sales = min(sales),
+    max_sales = max(sales),
+    mean_sales = mean(sales),
+    neur = first(neur)  # Extract the constant neur value for each store
+  )
+
+# Plot actual sales, regression line, and EAP marks for neuroticism (Coffee)
+ggplot(coff_coffee, aes(x = neur, y = sales, color = as.factor(store))) +
+  geom_point() +  # Add points for each observation (actual sales)
+  geom_smooth(aes(y = predicted_sales_coffee), method = "lm", linetype = "dashed", color = "black", size = 1, se = FALSE) +  # Add dashed regression line based on EAP values using lm
+  geom_text(data = store_stats_neur_coffee, aes(x = neur, y = max_sales, label = store), angle = 90, vjust = -0.5, size = 3, show.legend = FALSE) +  # Label lines with store numbers
+  geom_point(aes(x = neur, y = predicted_sales_coffee), shape = 5, size = 4, color = "black") +
+  geom_point(data = store_stats_neur_coffee, aes(x = neur, y = mean_sales), size = 2, shape = 21, fill = "white", color = "black", stroke = 1.5, alpha = 0.5) +  # Add observed means as large white points with black border
+  labs(title = "Sales vs. Neuroticism (Coffee) with EAP Regression Line",
+       x = "Neuroticism",
+       y = "Sales",
+       color = "Store") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 8),  # Adjust text angle and size for readability
+        legend.position = "bottom",  # Position the legend at the bottom
+        legend.direction = "horizontal") +  # Arrange legend in horizontal direction
+  guides(color = guide_legend(nrow = 2, byrow = TRUE))  # Arrange legend in 2 rows
+
+```
+
+## Summary
+
+  The hierarchical model that we specified isolated the store managers group level effects and the stores' food offset allowing us to further examine the fixed effects of conscientiousness, neuroticism, and the sale type (food or coffee) on sales. This led us to make the conclusion that conscientiousness only really affects sales of food, and food itself sells less than coffee. There is a chance that neuroticism negatively affects coffee sales, but also positively affects food sales. We identified 14, 17, 15, and 13 as outstanding in their field (perhaps despite manager emotional volatility), and would advocate for "sanity checks" before any restructuring based on this information.
+
+## Diagnostics
+
+  Due to the nature of this type of modeling we have included some metrics that should serve to verify the validity of the model approach. By examining the trace plots below, we can see that throughout the process of picking model parameters, there were no parameters that had a positive or negative trend and didn't remain centered around a specific value. This would indicate a misspecification of our model. 
+```{r trace, echo=FALSE}
+random_effects_params <- grep("r_store", dimnames(samples)[[3]], value = TRUE)
+# Plot trace plots for specific parameters
+mcmc_trace(samples, pars = c("b_con", "b_neur", "b_food", "Intercept", "b_con:food", "b_food:neur", "sigma"))
+# Number of parameters to show per page
+params_per_page <- 6
+
+# Create a function to display paginated trace plots
+plot_trace_page <- function(page, params_per_page, random_effects_params) {
+  start <- (page - 1) * params_per_page + 1
+  end <- min(page * params_per_page, length(random_effects_params))
+  params_subset <- random_effects_params[start:end]
+  mcmc_trace(samples, pars = params_subset)
+}
+
+# Example: Plot the first page
+plot_trace_page(1, params_per_page, random_effects_params)
+plot_trace_page(2, params_per_page, random_effects_params)
+plot_trace_page(3, params_per_page, random_effects_params)
+plot_trace_page(4, params_per_page, random_effects_params)
+plot_trace_page(5, params_per_page, random_effects_params)
+plot_trace_page(6, params_per_page, random_effects_params)
+plot_trace_page(7, 5, random_effects_params)
+
+```
+
+  The plot below allows us to gauge the accuracy of our model to the observed outcome variable distribution. The faint lines represent the sampled distributions used by the model to arrive at its final parameter values. We don't expect for these plots to eclipse each other, but the shape should be approximate.
+  
+```{r ppcheck, echo=FALSE}
+# Posterior predictive checks
+pp_check(fit, ndraws = 100)
+```
+
+  To further illustrate the fit of the model, we can examine a plot of the residuals by store to confirm that the group level effects are indeed capturing the latent effects within the data. Since the distributions are approximately similar and all the residuals are fairly centered around 0, we can argue that each group level effect is appropriate for our data.
+```{r resid, echo=FALSE}
+# Predicted values
+predictions <- fitted(fit)
+
+# Actual values
+actuals <- coff$sales
+
+# Calculate residuals
+residuals_df <- residuals(fit) %>%as.data.frame()
+
+# Assuming 'coff' is your original data frame containing 'store' column
+residuals_df$store <- coff$store
+
+
+# Summarize residuals by store
+residuals_summary <- residuals_df %>%
+  group_by(store) %>%
+  summarise(mean_residual = mean(Estimate),
+            sd_residual = sd(Estimate))
+
+# Boxplot of residuals by store
+ggplot(residuals_df, aes(x = as.factor(store), y = Estimate)) +
+  geom_boxplot() +
+  labs(title = "Residuals by Store",
+       x = "Store",
+       y = "Residuals (Actual - Predicted)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1, size = 8))  # Adjust text angle and size for readability
+
+```
+
+
+
+
+
+
+
+
